@@ -17,12 +17,12 @@ from torch.utils.data import DataLoader
 
 from models.textcnn import MixTextCNN, Config
 from dataset.imdb import get_imdb, MyIMDB
-from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p, savefig
+from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p
 from tensorboardX import SummaryWriter
 
 parser = argparse.ArgumentParser(description='PyTorch MixMatch Training')
 # Optimization options
-parser.add_argument('--epochs', default=1024, type=int, metavar='N',
+parser.add_argument('--epochs', default=1024, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -34,16 +34,18 @@ parser.add_argument('--max-length', default=512, type=int, metavar='N',
                     help='max text length')
 parser.add_argument('--lr', '--learning-rate', default=0.002, type=float,
                     metavar='LR', help='initial learning rate')
+parser.add_argument('--pad-token', default='<pad>', type=str,
+                    help='token used for pad sentence to max length')
 # Checkpoints
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 # Miscs
-parser.add_argument('--manualSeed', type=int, default=0, help='manual seed')
+parser.add_argument('--manual-seed', type=int, default=0, help='manual seed')
 # Device options
 parser.add_argument('--gpu', default='0', type=str,
                     help='id(s) for CUDA_VISIBLE_DEVICES')
 # Method options
-parser.add_argument('--n-labeled', type=int, default=250,
+parser.add_argument('--n-labeled', type=int, default=500,
                     help='Number of labeled data')
 parser.add_argument('--val-iteration', type=int, default=1024,
                     help='Number of labeled data')
@@ -62,9 +64,9 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 use_cuda = torch.cuda.is_available()
 
 # Random seed
-if args.manualSeed is None:
-    args.manualSeed = random.randint(1, 10000)
-np.random.seed(args.manualSeed)
+if args.manual_seed is None:
+    args.manual_seed = random.randint(1, 10000)
+np.random.seed(args.manual_seed)
 
 best_acc = 0  # best test accuracy
 
@@ -150,9 +152,9 @@ def main():
 
         train_loss, train_loss_x, train_loss_u = train(train_labeled_loader, train_unlabeled_loader, text_vocab, model,
                                                        optimizer, ema_optimizer, train_criterion, epoch, use_cuda)
-        _, train_acc = validate(train_labeled_loader, ema_model, criterion, epoch, use_cuda, mode='Train Stats')
-        val_loss, val_acc = validate(valid_loader, ema_model, criterion, epoch, use_cuda, mode='Valid Stats')
-        test_loss, test_acc = validate(test_loader, ema_model, criterion, epoch, use_cuda, mode='Test Stats ')
+        _, train_acc = validate(train_labeled_loader, ema_model, criterion, use_cuda, mode='Train Stats')
+        val_loss, val_acc = validate(valid_loader, ema_model, criterion, use_cuda, mode='Valid Stats')
+        test_loss, test_acc = validate(test_loader, ema_model, criterion, use_cuda, mode='Test Stats ')
 
         step = args.val_iteration * (epoch + 1)
 
@@ -197,17 +199,8 @@ def get_batch(iterator, loader):
         inputs, targets = next(iterator)
     return iterator, inputs, targets
 
-
-def truncated_padded(tensor, max_len, pad):
-    bs, length = tensor.size()
-    if max_len > length:
-        pad_tensor = pad * torch.ones((bs, max_len - length), dtype=tensor.dtype)
-        return torch.cat([tensor, pad_tensor], dim=1)
-    elif max_len < length:
-        return tensor[:, :max_len]
-    else:
-        return tensor
-
+def get_max_length(tensors, pad_id):
+    return max((tensor != pad_id).sum() for tensor in tensors)
 
 def train(labeled_trainloader, unlabeled_trainloader, vocab, model, optimizer, ema_optimizer, criterion, epoch,
           use_cuda):
@@ -250,11 +243,9 @@ def train(labeled_trainloader, unlabeled_trainloader, vocab, model, optimizer, e
             targets_u = targets_u.detach()
 
         # mixup
-        length_x, length_u, length_u2 = inputs_x.size(1), inputs_u.size(1), inputs_u2.size(1)
-        pad = vocab.stoi['<pad>']
-        max_len = max(length_x, length_u, length_u2, args.max_length)
-        inputs_x, inputs_u, inputs_u2 = [truncated_padded(inputs, max_len, pad)
-                                         for inputs in [inputs_x, inputs_u, inputs_u2]]
+        pad_id = vocab.stoi[args.pad_token]
+        max_len = max(get_max_length(inputs, pad_id) for inputs in [inputs_x, inputs_u, inputs_u2])
+        inputs_x, inputs_u, inputs_u2 = inputs_x[:max_len], inputs_u[:max_len], inputs_u2[:max_len]
         all_inputs = torch.cat([inputs_x, inputs_u, inputs_u2], dim=0)
         all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)
 
@@ -310,7 +301,7 @@ def train(labeled_trainloader, unlabeled_trainloader, vocab, model, optimizer, e
     return (losses.avg, losses_x.avg, losses_u.avg,)
 
 
-def validate(valloader, model, criterion, epoch, use_cuda, mode):
+def validate(valloader, model, criterion, use_cuda, mode):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -378,7 +369,7 @@ class SemiLoss(object):
         probs_u = torch.softmax(outputs_u, dim=1)
 
         # 标注数据损失
-        # Lx = -torch.mean(torch.sum(F.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
+        # Lx = -torch.mean(torch.sum(torch.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
         Lx = nn.BCEWithLogitsLoss()(outputs_x, targets_x)
         # 无标注数据损失
         Lu = torch.mean((probs_u - targets_u) ** 2)
