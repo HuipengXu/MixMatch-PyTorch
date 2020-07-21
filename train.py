@@ -22,7 +22,7 @@ from tensorboardX import SummaryWriter
 
 parser = argparse.ArgumentParser(description='PyTorch MixMatch Training')
 # Optimization options
-parser.add_argument('--epochs', default=5, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
+parser.add_argument('--epochs', default=8, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -32,7 +32,7 @@ parser.add_argument('--vocab-size', default=30000, type=int, metavar='N',
                     help='vocabulary size')
 parser.add_argument('--max-length', default=512, type=int, metavar='N',
                     help='max text length')
-parser.add_argument('--lr', '--learning-rate', default=0.002, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
                     metavar='LR', help='initial learning rate')
 parser.add_argument('--pad-token', default='<pad>', type=str,
                     help='token used for pad sentence to max length')
