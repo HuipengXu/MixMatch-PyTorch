@@ -246,6 +246,14 @@ def augmentation(root='../data/aclImdb/', num_labeled=250, split_ratio=0.7):
     aug_unlabeled_dir = os.path.join(root, 'aug_train_unlabeled')
     valid_dir = os.path.join(root, 'valid')
     orig_dir = os.path.join(root, 'train')
+    # 清除原有文件
+    if os.path.exists(aug_labeled_dir):
+        shutil.rmtree(aug_labeled_dir)
+    if os.path.exists(aug_unlabeled_dir):
+        shutil.rmtree(aug_unlabeled_dir)
+    if os.path.exists(valid_dir):
+        shutil.rmtree(valid_dir)
+
     mkdir(aug_labeled_dir)
     mkdir(aug_unlabeled_dir)
     mkdir(valid_dir)
@@ -337,4 +345,4 @@ def get_imdb(root='../data/aclImdb/'):
 
 
 if __name__ == '__main__':
-    get_imdb()
+    augmentation(num_labeled=500)

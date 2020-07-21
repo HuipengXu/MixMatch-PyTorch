@@ -13,42 +13,46 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
-import torch.utils.data as data
-import torchvision.transforms as transforms
-import torch.nn.functional as F
+from torch.utils.data import DataLoader
 
-import models.wideresnet as models
-import dataset.cifar10 as dataset
-from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p, savefig
+from models.textcnn import MixTextCNN, Config
+from dataset.imdb import get_imdb, MyIMDB
+from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p
 from tensorboardX import SummaryWriter
 
 parser = argparse.ArgumentParser(description='PyTorch MixMatch Training')
 # Optimization options
-parser.add_argument('--epochs', default=1024, type=int, metavar='N',
+parser.add_argument('--epochs', default=5, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--batch-size', default=64, type=int, metavar='N',
+parser.add_argument('--batch-size', default=128, type=int, metavar='N',
                     help='train batch-size')
+parser.add_argument('--vocab-size', default=25000, type=int, metavar='N',
+                    help='vocabulary size')
+parser.add_argument('--max-length', default=512, type=int, metavar='N',
+                    help='max text length')
 parser.add_argument('--lr', '--learning-rate', default=0.002, type=float,
                     metavar='LR', help='initial learning rate')
+parser.add_argument('--pad-token', default='<pad>', type=str,
+                    help='token used for pad sentence to max length')
 # Checkpoints
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 # Miscs
-parser.add_argument('--manualSeed', type=int, default=0, help='manual seed')
+parser.add_argument('--manual-seed', type=int, default=0, help='manual seed')
 # Device options
 parser.add_argument('--gpu', default='0', type=str,
                     help='id(s) for CUDA_VISIBLE_DEVICES')
 # Method options
-parser.add_argument('--n-labeled', type=int, default=250,
+parser.add_argument('--n-labeled', type=int, default=500,
                     help='Number of labeled data')
 parser.add_argument('--val-iteration', type=int, default=1024,
                     help='Number of labeled data')
 parser.add_argument('--out', default='result',
                     help='Directory to output the result')
 parser.add_argument('--alpha', default=0.75, type=float)
-parser.add_argument('--lambda-u', default=75, type=float)
+parser.add_argument('--lambda-u', default=0.3, type=float)
 parser.add_argument('--T', default=0.5, type=float)
 parser.add_argument('--ema-decay', default=0.999, type=float)
 
@@ -60,9 +64,9 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 use_cuda = torch.cuda.is_available()
 
 # Random seed
-if args.manualSeed is None:
-    args.manualSeed = random.randint(1, 10000)
-np.random.seed(args.manualSeed)
+if args.manual_seed is None:
+    args.manual_seed = random.randint(1, 10000)
+np.random.seed(args.manual_seed)
 
 best_acc = 0  # best test accuracy
 
@@ -74,34 +78,30 @@ def main():
         mkdir_p(args.out)
 
     # Data
-    print(f'==> Preparing cifar10')
+    print(f'==> Preparing IMDB')
+    train_labeled_set, train_unlabeled_set, valid_set, test_set, text_field, label_field = get_imdb('./data/aclImdb/')
+    text_field.build_vocab(train_unlabeled_set, max_size=args.vocab_size)
+    label_field.build_vocab(train_unlabeled_set)
+    print(f"Unique tokens in TEXT vocabulary: {len(text_field.vocab)}")
+    print(f"Unique tokens in LABEL vocabulary: {len(label_field.vocab)}")
+    text_vocab, label_vocab = text_field.vocab, label_field.vocab
+    train_labeled_set = MyIMDB(train_labeled_set, text_vocab, label_vocab)
+    train_unlabeled_set = MyIMDB(train_unlabeled_set, text_vocab, label_vocab, unlabeled=True)
+    valid_set = MyIMDB(valid_set, text_vocab, label_vocab)
+    test_set = MyIMDB(test_set, text_vocab, label_vocab)
 
-    transform_train = transforms.Compose([
-        dataset.RandomPadandCrop(32),
-        dataset.RandomFlip(),
-        dataset.ToTensor(),
-    ])
-
-    transform_val = transforms.Compose([
-        dataset.ToTensor(),
-    ])
-
-    train_labeled_set, train_unlabeled_set, val_set, test_set = dataset.get_cifar10('./data', args.n_labeled,
-                                                                                    transform_train=transform_train,
-                                                                                    transform_val=transform_val,
-                                                                                    download=False)
-    labeled_trainloader = data.DataLoader(train_labeled_set, batch_size=args.batch_size, shuffle=True, num_workers=0,
-                                          drop_last=True)
-    unlabeled_trainloader = data.DataLoader(train_unlabeled_set, batch_size=args.batch_size, shuffle=True,
-                                            num_workers=0, drop_last=True)
-    val_loader = data.DataLoader(val_set, batch_size=args.batch_size, shuffle=False, num_workers=0)
-    test_loader = data.DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    train_labeled_loader = DataLoader(train_labeled_set, batch_size=args.batch_size, shuffle=True, num_workers=0,
+                                      drop_last=True)
+    train_unlabeled_loader = DataLoader(train_unlabeled_set, batch_size=args.batch_size, shuffle=True, num_workers=0,
+                                        drop_last=True)
+    valid_loader = DataLoader(valid_set, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     # Model
-    print("==> creating WRN-28-2")
+    print("==> creating TextCNN")
 
-    def create_model(use_cuda=False, ema=False):
-        model = models.WideResNet(num_classes=10)
+    def create_model(config, model=MixTextCNN, use_cuda=False, ema=False):
+        model = model(config)
         if use_cuda: model = model.cuda()
 
         if ema:
@@ -110,21 +110,22 @@ def main():
 
         return model
 
-    model = create_model(use_cuda)
-    ema_model = create_model(use_cuda, ema=True)
+    config = Config(text_field, label_field)
+    model = create_model(config, use_cuda=use_cuda)
+    ema_model = create_model(config, use_cuda=use_cuda, ema=True)
 
     cudnn.benchmark = True
     print('    Total params: %.2fM' % (sum(p.numel() for p in model.parameters()) / 1000000.0))
 
     train_criterion = SemiLoss()
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     ema_optimizer = WeightEMA(model, ema_model, alpha=args.ema_decay)
     start_epoch = 0
 
     # Resume
-    title = 'noisy-cifar-10'
+    title = 'noisy-imdb'
     if args.resume:
         # Load checkpoint.
         print('==> Resuming from checkpoint..')
@@ -149,11 +150,11 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         print('\nEpoch: [%d | %d] LR: %f' % (epoch + 1, args.epochs, state['lr']))
 
-        train_loss, train_loss_x, train_loss_u = train(labeled_trainloader, unlabeled_trainloader, model, optimizer,
-                                                       ema_optimizer, train_criterion, epoch, use_cuda)
-        _, train_acc = validate(labeled_trainloader, ema_model, criterion, epoch, use_cuda, mode='Train Stats')
-        val_loss, val_acc = validate(val_loader, ema_model, criterion, epoch, use_cuda, mode='Valid Stats')
-        test_loss, test_acc = validate(test_loader, ema_model, criterion, epoch, use_cuda, mode='Test Stats ')
+        train_loss, train_loss_x, train_loss_u = train(train_labeled_loader, train_unlabeled_loader, text_vocab, model,
+                                                       optimizer, ema_optimizer, train_criterion, epoch, use_cuda)
+        _, train_acc = validate(train_labeled_loader, ema_model, criterion, use_cuda, mode='Train Stats')
+        val_loss, val_acc = validate(valid_loader, ema_model, criterion, use_cuda, mode='Valid Stats')
+        test_loss, test_acc = validate(test_loader, ema_model, criterion, use_cuda, mode='Test Stats ')
 
         step = args.val_iteration * (epoch + 1)
 
@@ -190,7 +191,19 @@ def main():
     print(np.mean(test_accs[-20:]))
 
 
-def train(labeled_trainloader, unlabeled_trainloader, model, optimizer, ema_optimizer, criterion, epoch, use_cuda):
+def get_batch(iterator, loader):
+    try:
+        inputs, targets = next(iterator)
+    except:
+        iterator = iter(loader)
+        inputs, targets = next(iterator)
+    return iterator, inputs, targets
+
+def get_max_length(tensors, pad_id):
+    return max((tensor != pad_id).sum() for tensor in tensors)
+
+def train(labeled_trainloader, unlabeled_trainloader, vocab, model, optimizer, ema_optimizer, criterion, epoch,
+          use_cuda):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -205,26 +218,15 @@ def train(labeled_trainloader, unlabeled_trainloader, model, optimizer, ema_opti
 
     model.train()
     for batch_idx in range(args.val_iteration):
-        try:
-            inputs_x, targets_x = next(labeled_train_iter)
-        except:
-            labeled_train_iter = iter(labeled_trainloader)
-            inputs_x, targets_x = next(labeled_train_iter)
-
-        try:
-            (inputs_u, inputs_u2), _ = next(unlabeled_train_iter)
-        except:
-            unlabeled_train_iter = iter(unlabeled_trainloader)
-            # 两个无标注样本
-            (inputs_u, inputs_u2), _ = next(unlabeled_train_iter)
+        labeled_train_iter, inputs_x, targets_x = get_batch(labeled_train_iter, labeled_trainloader)
+        unlabeled_train_iter, inputs_u, inputs_u2 = get_batch(unlabeled_train_iter, unlabeled_trainloader)
 
         # measure data loading time
         data_time.update(time.time() - end)
-
         batch_size = inputs_x.size(0)
 
         # Transform label to one-hot
-        targets_x = torch.zeros(batch_size, 10).scatter_(1, targets_x.view(-1, 1), 1)
+        targets_x = torch.zeros(batch_size, 2).scatter_(1, targets_x.view(-1, 1).long(), 1)
 
         if use_cuda:
             inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda(non_blocking=True)
@@ -241,6 +243,9 @@ def train(labeled_trainloader, unlabeled_trainloader, model, optimizer, ema_opti
             targets_u = targets_u.detach()
 
         # mixup
+        pad_id = vocab.stoi[args.pad_token]
+        max_len = max(get_max_length(inputs, pad_id) for inputs in [inputs_x, inputs_u, inputs_u2])
+        inputs_x, inputs_u, inputs_u2 = inputs_x[:max_len], inputs_u[:max_len], inputs_u2[:max_len]
         all_inputs = torch.cat([inputs_x, inputs_u, inputs_u2], dim=0)
         all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)
 
@@ -253,21 +258,8 @@ def train(labeled_trainloader, unlabeled_trainloader, model, optimizer, ema_opti
         input_a, input_b = all_inputs, all_inputs[idx]
         target_a, target_b = all_targets, all_targets[idx]
         # 13、14行合成一步了
-        mixed_input = l * input_a + (1 - l) * input_b
         mixed_target = l * target_a + (1 - l) * target_b
-
-        # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
-        mixed_input = list(torch.split(mixed_input, batch_size))
-        mixed_input = interleave(mixed_input, batch_size)
-
-        logits = [model(mixed_input[0])]
-        for input in mixed_input[1:]:
-            logits.append(model(input))
-
-        # put interleaved samples back
-        logits = interleave(logits, batch_size)
-        logits_x = logits[0]
-        logits_u = torch.cat(logits[1:], dim=0)
+        logits_x, logits_u = model(input_a, input_b, l, training=True)
 
         Lx, Lu, w = criterion(logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:],
                               epoch + batch_idx / args.val_iteration)
@@ -309,12 +301,11 @@ def train(labeled_trainloader, unlabeled_trainloader, model, optimizer, ema_opti
     return (losses.avg, losses_x.avg, losses_u.avg,)
 
 
-def validate(valloader, model, criterion, epoch, use_cuda, mode):
+def validate(valloader, model, criterion, use_cuda, mode):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
+    Acc = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
@@ -330,20 +321,20 @@ def validate(valloader, model, criterion, epoch, use_cuda, mode):
                 inputs, targets = inputs.cuda(), targets.cuda(non_blocking=True)
             # compute output
             outputs = model(inputs)
-            loss = criterion(outputs, targets)
+            # 注意和训练的时候计算方式有些不一样
+            loss = criterion(outputs[:, 1], targets)
 
             # measure accuracy and record loss
-            prec1, prec5 = accuracy(outputs, targets, topk=(1, 5))
+            acc = accuracy(outputs, targets)
             losses.update(loss.item(), inputs.size(0))
-            top1.update(prec1.item(), inputs.size(0))
-            top5.update(prec5.item(), inputs.size(0))
+            Acc.update(acc.item(), inputs.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
             # plot progress
-            bar.suffix = '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | top1: {top1: .4f} | top5: {top5: .4f}'.format(
+            bar.suffix = '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
                 batch=batch_idx + 1,
                 size=len(valloader),
                 data=data_time.avg,
@@ -351,12 +342,11 @@ def validate(valloader, model, criterion, epoch, use_cuda, mode):
                 total=bar.elapsed_td,
                 eta=bar.eta_td,
                 loss=losses.avg,
-                top1=top1.avg,
-                top5=top5.avg,
+                acc=Acc.avg,
             )
             bar.next()
         bar.finish()
-    return (losses.avg, top1.avg)
+    return (losses.avg, Acc.avg)
 
 
 def save_checkpoint(state, is_best, checkpoint=args.out, filename='checkpoint.pth.tar'):
@@ -379,7 +369,8 @@ class SemiLoss(object):
         probs_u = torch.softmax(outputs_u, dim=1)
 
         # 标注数据损失
-        Lx = -torch.mean(torch.sum(F.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
+        # Lx = -torch.mean(torch.sum(torch.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
+        Lx = nn.BCEWithLogitsLoss()(outputs_x, targets_x)
         # 无标注数据损失
         Lu = torch.mean((probs_u - targets_u) ** 2)
         return Lx, Lu, args.lambda_u * linear_rampup(epoch)  # 线性增大 lambda_u
@@ -405,54 +396,6 @@ class WeightEMA(object):
             ema_param.add_(param * one_minus_alpha)
             # customized weight decay
             param.mul_(1 - self.wd)
-
-
-def interleave_offsets(batch, nu):
-    """
-    Args:
-        batch: batch_size
-        nu: n 个 batch 减一
-
-    Returns:
-
-    """
-    groups = [batch // (nu + 1)] * (nu + 1)
-    for x in range(batch - sum(groups)):
-        groups[-x - 1] += 1
-    offsets = [0]
-    for g in groups:
-        offsets.append(offsets[-1] + g)
-    assert offsets[-1] == batch
-    return offsets
-
-
-def interleave(xy, batch):
-    """
-    Args:
-        xy: n 个 batch 的 list
-        batch: batch_size
-
-    Returns:
-
-    例子：
-    batch_size: 128
-    len(xy) = 6, 即有 6 个 batch
-    那么经过 interleave_offsets 处理得到：
-      labeled:  [21, 21, 21, 21, 22, 22]
-    unlabeled: [[21, 21, 21, 21, 22, 22]
-                [21, 21, 21, 21, 22, 22]
-                [21, 21, 21, 21, 22, 22]
-                [21, 21, 21, 21, 22, 22]
-                [21, 21, 21, 21, 22, 22]]
-    如果直接将以上每一行作为一个 batch 输入到模型中，那么情况变成第一个 batch 全是标注数据，后面的数据全部都是无标注数据
-    所以下面函数将对角线上分别与第一行同一列进行调换以使得每一个 batch 都存在一部分标注数据，每一个 batch 的数据分布也变得较为一致
-    """
-    nu = len(xy) - 1
-    offsets = interleave_offsets(batch, nu)
-    xy = [[v[offsets[p]:offsets[p + 1]] for p in range(nu + 1)] for v in xy]
-    for i in range(1, nu + 1):
-        xy[0][i], xy[i][i] = xy[i][i], xy[0][i]
-    return [torch.cat(v, dim=0) for v in xy]
 
 
 if __name__ == '__main__':
