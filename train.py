@@ -28,7 +28,7 @@ parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('--batch-size', default=128, type=int, metavar='N',
                     help='train batch-size')
-parser.add_argument('--vocab-size', default=25000, type=int, metavar='N',
+parser.add_argument('--vocab-size', default=30000, type=int, metavar='N',
                     help='vocabulary size')
 parser.add_argument('--max-length', default=512, type=int, metavar='N',
                     help='max text length')
