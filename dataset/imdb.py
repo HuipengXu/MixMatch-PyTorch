@@ -345,4 +345,4 @@ def get_imdb(root='../data/aclImdb/'):
 
 
 if __name__ == '__main__':
-    augmentation(num_labeled=500)
+    augmentation(num_labeled=1000)

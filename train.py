@@ -5,6 +5,7 @@ import os
 import shutil
 import time
 import random
+import json
 
 import numpy as np
 
@@ -19,6 +20,8 @@ from models.textcnn import MixTextCNN, Config
 from dataset.imdb import get_imdb, MyIMDB
 from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p
 from tensorboardX import SummaryWriter
+
+#TODO 增大 增广次数，当前为 2
 
 parser = argparse.ArgumentParser(description='PyTorch MixMatch Training')
 # Optimization options
@@ -45,7 +48,7 @@ parser.add_argument('--manual-seed', type=int, default=0, help='manual seed')
 parser.add_argument('--gpu', default='0', type=str,
                     help='id(s) for CUDA_VISIBLE_DEVICES')
 # Method options
-parser.add_argument('--n-labeled', type=int, default=500,
+parser.add_argument('--n-labeled', type=int, default=1000,
                     help='Number of labeled data')
 parser.add_argument('--val-iteration', type=int, default=1024,
                     help='Number of labeled data')
@@ -58,6 +61,7 @@ parser.add_argument('--ema-decay', default=0.999, type=float)
 
 args = parser.parse_args()
 state = {k: v for k, v in args._get_kwargs()}
+print(json.dumps(state, indent=4))
 
 # Use CUDA
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -74,8 +78,10 @@ best_acc = 0  # best test accuracy
 def main():
     global best_acc
 
-    if not os.path.isdir(args.out):
-        mkdir_p(args.out)
+
+    if os.path.exists(args.out):
+        shutil.rmtree(args.out)
+    mkdir_p(args.out)
 
     # Data
     print(f'==> Preparing IMDB')
