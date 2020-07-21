@@ -22,13 +22,13 @@ from tensorboardX import SummaryWriter
 
 parser = argparse.ArgumentParser(description='PyTorch MixMatch Training')
 # Optimization options
-parser.add_argument('--epochs', default=7, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
+parser.add_argument('--epochs', default=8, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('--batch-size', default=128, type=int, metavar='N',
                     help='train batch-size')
-parser.add_argument('--vocab-size', default=30000, type=int, metavar='N',
+parser.add_argument('--vocab-size', default=40000, type=int, metavar='N',
                     help='vocabulary size')
 parser.add_argument('--max-length', default=512, type=int, metavar='N',
                     help='max text length')
@@ -53,7 +53,7 @@ parser.add_argument('--out', default='result',
                     help='Directory to output the result')
 parser.add_argument('--alpha', default=0.75, type=float)
 parser.add_argument('--lambda-u', default=0.3, type=float)
-parser.add_argument('--T', default=0.7, type=float)
+parser.add_argument('--T', default=0.5, type=float)
 parser.add_argument('--ema-decay', default=0.999, type=float)
 
 args = parser.parse_args()
