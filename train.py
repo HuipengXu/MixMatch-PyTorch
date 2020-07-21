@@ -22,7 +22,7 @@ from tensorboardX import SummaryWriter
 
 parser = argparse.ArgumentParser(description='PyTorch MixMatch Training')
 # Optimization options
-parser.add_argument('--epochs', default=8, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
+parser.add_argument('--epochs', default=6, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
