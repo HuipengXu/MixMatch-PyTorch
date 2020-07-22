@@ -11,6 +11,7 @@ class Config(object):
         self.dropout = 0.5                                              # 随机失活
         self.num_classes = len(label.vocab)                             # 类别数
         self.n_vocab = len(text.vocab)                                  # 词表大小，在运行时赋值
+        self.freeze = True
         self.num_epochs = 5                                            # epoch数
         self.batch_size = 128                                           # mini-batch大小
         self.learning_rate = 1e-3                                       # 学习率
@@ -27,7 +28,7 @@ class MixTextCNN(nn.Module):
     def __init__(self, config):
         super(MixTextCNN, self).__init__()
         if config.embedding is not None:
-            self.embedding = nn.Embedding.from_pretrained(config.embedding, freeze=False)
+            self.embedding = nn.Embedding.from_pretrained(config.embedding, freeze=config.freeze)
         else:
             self.embedding = nn.Embedding(config.n_vocab, config.embed, padding_idx=1)
         self.convs = nn.ModuleList(

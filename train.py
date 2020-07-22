@@ -15,6 +15,7 @@ import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torchtext.vocab import GloVe
 
 from models.textcnn import MixTextCNN, Config
 from dataset.imdb import get_imdb, MyIMDB
@@ -31,7 +32,7 @@ parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('--batch-size', default=128, type=int, metavar='N',
                     help='train batch-size')
-parser.add_argument('--vocab-size', default=50000, type=int, metavar='N',
+parser.add_argument('--vocab-size', default=72527, type=int, metavar='N',
                     help='vocabulary size')
 parser.add_argument('--max-length', default=512, type=int, metavar='N',
                     help='max text length')
@@ -85,11 +86,12 @@ def main():
     # Data
     print(f'==> Preparing IMDB')
     train_labeled_set, train_unlabeled_set, valid_set, test_set, text_field, label_field = get_imdb('./data/aclImdb/')
-    text_field.build_vocab(train_unlabeled_set, max_size=args.vocab_size)
+    text_field.build_vocab(train_unlabeled_set, vectors=GloVe(name='6B', dim=300, cache='./data/'))
     label_field.build_vocab(train_unlabeled_set)
     print(f"Unique tokens in TEXT vocabulary: {len(text_field.vocab)}")
     print(f"Unique tokens in LABEL vocabulary: {len(label_field.vocab)}")
     text_vocab, label_vocab = text_field.vocab, label_field.vocab
+    embedding_matrix = text_vocab.vectors
     train_labeled_set = MyIMDB(train_labeled_set, text_vocab, label_vocab)
     train_unlabeled_set = MyIMDB(train_unlabeled_set, text_vocab, label_vocab, unlabeled=True)
     valid_set = MyIMDB(valid_set, text_vocab, label_vocab)
@@ -115,7 +117,7 @@ def main():
 
         return model
 
-    config = Config(text_field, label_field)
+    config = Config(text_field, label_field, embedding=embedding_matrix)
     model = create_model(config, use_cuda=use_cuda)
     ema_model = create_model(config, use_cuda=use_cuda, ema=True)
 
