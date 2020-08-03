@@ -1,5 +1,3 @@
-from __future__ import print_function
-
 import argparse
 import os
 import shutil
@@ -17,12 +15,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchtext.vocab import GloVe
 
-from models.textcnn import MixTextCNN, Config
-from dataset.imdb import get_imdb, MyIMDB
-from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p
+from textcnn import MixTextCNN, Config
+from imdb import get_imdb, MyIMDB
+from progress.bar import Bar
+from util import mkdir_p, AverageMeter, Logger, accuracy, SemiLoss, WeightEMA, save_checkpoint
 from tensorboardX import SummaryWriter
 
-#TODO 增大 增广次数，当前为 2
 
 parser = argparse.ArgumentParser(description='PyTorch MixMatch Training')
 # Optimization options
@@ -73,11 +71,8 @@ if args.manual_seed is None:
     args.manual_seed = random.randint(1, 10000)
 np.random.seed(args.manual_seed)
 
-best_acc = 0  # best test accuracy
-
-
 def main():
-    global best_acc
+    best_acc = 0
 
     if os.path.exists(args.out):
         shutil.rmtree(args.out)
@@ -128,7 +123,7 @@ def main():
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
-    ema_optimizer = WeightEMA(model, ema_model, alpha=args.ema_decay)
+    ema_optimizer = WeightEMA(model, ema_model, args.lr, alpha=args.ema_decay)
     start_epoch = 0
 
     # Resume
@@ -186,7 +181,7 @@ def main():
             'acc': val_acc,
             'best_acc': best_acc,
             'optimizer': optimizer.state_dict(),
-        }, is_best)
+        }, is_best, args.out)
         test_accs.append(test_acc)
     logger.close()
     writer.close()
@@ -209,8 +204,8 @@ def get_batch(iterator, loader):
 def get_max_length(tensors, pad_id):
     return max((tensor != pad_id).sum() for tensor in tensors)
 
-def train(labeled_trainloader, unlabeled_trainloader, vocab, model, optimizer, ema_optimizer, criterion, epoch,
-          use_cuda):
+def train(labeled_trainloader, unlabeled_trainloader, vocab, model, optimizer,
+          ema_optimizer, criterion, epoch, use_cuda):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -268,8 +263,8 @@ def train(labeled_trainloader, unlabeled_trainloader, vocab, model, optimizer, e
         mixed_target = l * target_a + (1 - l) * target_b
         logits_x, logits_u = model(input_a, input_b, l, training=True)
 
-        Lx, Lu, w = criterion(logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:],
-                              epoch + batch_idx / args.val_iteration)
+        Lx, Lu, w = criterion(args.lambda_u, logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:],
+                              epoch + batch_idx / args.val_iteration, args.epochs)
 
         loss = Lx + w * Lu
 
@@ -354,55 +349,6 @@ def validate(valloader, model, criterion, use_cuda, mode):
             bar.next()
         bar.finish()
     return (losses.avg, Acc.avg)
-
-
-def save_checkpoint(state, is_best, checkpoint=args.out, filename='checkpoint.pth.tar'):
-    filepath = os.path.join(checkpoint, filename)
-    torch.save(state, filepath)
-    if is_best:
-        shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best.pth.tar'))
-
-
-def linear_rampup(current, rampup_length=args.epochs):
-    if rampup_length == 0:
-        return 1.0
-    else:
-        current = np.clip(current / rampup_length, 0.0, 1.0)
-        return float(current)
-
-
-class SemiLoss(object):
-    def __call__(self, outputs_x, targets_x, outputs_u, targets_u, epoch):
-        probs_u = torch.softmax(outputs_u, dim=1)
-
-        # 标注数据损失
-        # Lx = -torch.mean(torch.sum(torch.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
-        Lx = nn.BCEWithLogitsLoss()(outputs_x, targets_x)
-        # 无标注数据损失
-        Lu = torch.mean((probs_u - targets_u) ** 2)
-        return Lx, Lu, args.lambda_u * linear_rampup(epoch)  # 线性增大 lambda_u
-
-
-class WeightEMA(object):
-    def __init__(self, model, ema_model, alpha=0.999):
-        self.model = model
-        self.ema_model = ema_model
-        self.alpha = alpha
-        self.params = list(model.state_dict().values())
-        self.ema_params = list(ema_model.state_dict().values())
-        self.wd = 0.02 * args.lr
-
-        for param, ema_param in zip(self.params, self.ema_params):
-            param.data.copy_(ema_param.data)
-
-    def step(self):
-        one_minus_alpha = 1.0 - self.alpha
-        for param, ema_param in zip(self.params, self.ema_params):
-            if ema_param.dtype != torch.float32: continue
-            ema_param.mul_(self.alpha)
-            ema_param.add_(param * one_minus_alpha)
-            # customized weight decay
-            param.mul_(1 - self.wd)
 
 
 if __name__ == '__main__':

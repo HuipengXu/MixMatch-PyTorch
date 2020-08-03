@@ -1,9 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils import interleave
+from util import interleave
 
-class Config(object):
+
+class Config:
 
     """配置参数"""
     def __init__(self, text, label, embedding=None):
@@ -116,7 +117,7 @@ if __name__ == '__main__':
     text = data.Field()
     label = data.LabelField(dtype=torch.float)
 
-    trainset, testset = datasets.IMDB.splits(text, label, path='../data/aclImdb/')
+    trainset, testset = datasets.IMDB.splits(text, label, path='data/aclImdb/')
     trainset, validset = trainset.split(split_ratio=0.70)
 
     max_vocab_size = 25000

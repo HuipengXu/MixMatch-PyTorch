@@ -13,7 +13,6 @@ random.seed(1)
 import torch
 from torch.utils.data import Dataset
 from torchtext import data
-import numpy as np
 
 # stop words list
 stop_words = ['i', 'me', 'my', 'myself', 'we', 'our',
