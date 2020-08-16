@@ -15,22 +15,24 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchtext.vocab import GloVe
 
-from textcnn import MixTextCNN, Config
-from imdb import get_imdb, MyIMDB
 from progress.bar import Bar
-from util import mkdir_p, AverageMeter, Logger, accuracy, SemiLoss, WeightEMA, save_checkpoint
 from tensorboardX import SummaryWriter
+
+from textcnn import MixTextCNN, Config
+from preprocess import get_imdb
+from util import mkdir_p, AverageMeter, Logger, accuracy, \
+    SemiLoss, WeightEMA, save_checkpoint, MyIMDB
 
 
 parser = argparse.ArgumentParser(description='PyTorch MixMatch Training')
 # Optimization options
-parser.add_argument('--epochs', default=15, type=int, metavar='N', # 这个大小很重要，控制了 w 的大小，间接控制了损失的比例
+parser.add_argument('--epochs', default=15, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('--batch-size', default=128, type=int, metavar='N',
                     help='train batch-size')
-parser.add_argument('--vocab-size', default=72527, type=int, metavar='N',
+parser.add_argument('--vocab-size', default=50000, type=int, metavar='N',
                     help='vocabulary size')
 parser.add_argument('--max-length', default=512, type=int, metavar='N',
                     help='max text length')
@@ -42,9 +44,9 @@ parser.add_argument('--pad-token', default='<pad>', type=str,
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 # Miscs
-parser.add_argument('--manual-seed', type=int, default=0, help='manual seed')
+parser.add_argument('--manual-seed', type=int, default=None, help='manual seed')
 # Device options
-parser.add_argument('--gpu', default='0', type=str,
+parser.add_argument('--gpus', default='0,1,2,3', type=str,
                     help='id(s) for CUDA_VISIBLE_DEVICES')
 # Method options
 parser.add_argument('--n-labeled', type=int, default=1000,
@@ -58,34 +60,48 @@ parser.add_argument('--lambda-u', default=0.3, type=float)
 parser.add_argument('--T', default=0.5, type=float)
 parser.add_argument('--ema-decay', default=0.999, type=float)
 
-args = parser.parse_args()
-state = {k: v for k, v in args._get_kwargs()}
-print(json.dumps(state, indent=4))
 
-# Use CUDA
-os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-use_cuda = torch.cuda.is_available()
+def set_seed(args):
+    random.seed(args.manual_seed)
+    np.random.seed(args.manual_seed)
+    torch.manual_seed(args.manual_seed)
+    if args.n_gpus > 0:
+        torch.cuda.manual_seed_all(args.manual_seed)
 
-# Random seed
-if args.manual_seed is None:
-    args.manual_seed = random.randint(1, 10000)
-np.random.seed(args.manual_seed)
-
-def main():
+def main(args):
     best_acc = 0
+
+    # Use CUDA
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpus
+    use_cuda = torch.cuda.is_available()
+
+    # Random seed
+    random.seed(time.time())
+    if args.manual_seed is None:
+        args.manual_seed = random.randint(1, 10000)
 
     if os.path.exists(args.out):
         shutil.rmtree(args.out)
     mkdir_p(args.out)
 
+    args.n_gpus = len(args.gpus.split(','))
+    state = {k: v for k, v in args._get_kwargs()}
+    with open(os.path.join(args.out, 'args.json'), 'w', encoding='utf8') as f:
+        json.dump(state, f)
+        print('==> saved arguments')
+    print(json.dumps(state, indent=4))
+    set_seed(args)
+
     # Data
     print(f'==> Preparing IMDB')
-    train_labeled_set, train_unlabeled_set, valid_set, test_set, text_field, label_field = get_imdb('./data/aclImdb/')
-    text_field.build_vocab(train_unlabeled_set, vectors=GloVe(name='6B', dim=300, cache='./data/'))
+    train_labeled_set, train_unlabeled_set, valid_set, test_set,\
+    text_field, label_field = get_imdb('./data/aclImdb/')
+    text_field.build_vocab(train_unlabeled_set, max_size=args.vocab_size,
+                           vectors=GloVe(name='6B', dim=300, cache='./data/'))
     label_field.build_vocab(train_unlabeled_set)
-    print(f"Unique tokens in TEXT vocabulary: {len(text_field.vocab)}")
-    print(f"Unique tokens in LABEL vocabulary: {len(label_field.vocab)}")
     text_vocab, label_vocab = text_field.vocab, label_field.vocab
+    print(f"Unique tokens in TEXT vocabulary: {len(text_vocab)}")
+    print(f"Unique tokens in LABEL vocabulary: {len(label_vocab)}")
     embedding_matrix = text_vocab.vectors
     train_labeled_set = MyIMDB(train_labeled_set, text_vocab, label_vocab)
     train_unlabeled_set = MyIMDB(train_unlabeled_set, text_vocab, label_vocab, unlabeled=True)
@@ -179,17 +195,17 @@ def main():
             'state_dict': model.state_dict(),
             'ema_state_dict': ema_model.state_dict(),
             'acc': val_acc,
-            'best_acc': best_acc,
+            'best_val_acc': best_acc,
             'optimizer': optimizer.state_dict(),
         }, is_best, args.out)
         test_accs.append(test_acc)
     logger.close()
     writer.close()
 
-    print('Best acc:')
+    print('Best val acc:')
     print(best_acc)
 
-    print('Mean acc:')
+    print('Mean test acc:')
     print(np.mean(test_accs[-20:]))
 
 
@@ -261,7 +277,7 @@ def train(labeled_trainloader, unlabeled_trainloader, vocab, model, optimizer,
         target_a, target_b = all_targets, all_targets[idx]
         # 13、14行合成一步了
         mixed_target = l * target_a + (1 - l) * target_b
-        logits_x, logits_u = model(input_a, input_b, l, training=True)
+        logits_x, logits_u = model(input_a, input_b, l, mix=True)
 
         Lx, Lu, w = criterion(args.lambda_u, logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:],
                               epoch + batch_idx / args.val_iteration, args.epochs)
@@ -352,4 +368,5 @@ def validate(valloader, model, criterion, use_cuda, mode):
 
 
 if __name__ == '__main__':
-    main()
+    args = parser.parse_args()
+    main(args)

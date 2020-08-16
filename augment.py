@@ -1,20 +1,9 @@
-# Easy data augmentation techniques for text classification
-# Jason Wei and Kai Zou
-
 import random
+import re
 from random import shuffle
-import io
-import os
-import shutil
-from tqdm import tqdm
 
-random.seed(1)
+from nltk.corpus import wordnet
 
-import torch
-from torch.utils.data import Dataset
-from torchtext import data
-
-# stop words list
 stop_words = ['i', 'me', 'my', 'myself', 'we', 'our',
               'ours', 'ourselves', 'you', 'your', 'yours',
               'yourself', 'yourselves', 'he', 'him', 'his',
@@ -36,9 +25,6 @@ stop_words = ['i', 'me', 'my', 'myself', 'we', 'our',
               'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too',
               'very', 's', 't', 'can', 'will', 'just', 'don',
               'should', 'now', '']
-
-# cleaning up text
-import re
 
 
 def get_only_chars(line):
@@ -67,13 +53,6 @@ def get_only_chars(line):
 # Synonym replacement
 # Replace n words in the sentence with synonyms from wordnet
 ########################################################################
-
-# for the first time you use wordnet
-# import nltk
-# nltk.download('wordnet')
-from nltk.corpus import wordnet
-
-
 def synonym_replacement(words, n):
     new_words = words.copy()
     random_word_list = list(set([word for word in words if word not in stop_words]))
@@ -112,7 +91,6 @@ def get_synonyms(word):
 # Random deletion
 # Randomly delete words from the sentence with probability p
 ########################################################################
-
 def random_deletion(words, p):
     # obviously, if there's only one word, don't delete it
     if len(words) == 1:
@@ -137,7 +115,6 @@ def random_deletion(words, p):
 # Random swap
 # Randomly swap two words in the sentence n times
 ########################################################################
-
 def random_swap(words, n):
     new_words = words.copy()
     for _ in range(n):
@@ -162,7 +139,6 @@ def swap_word(new_words):
 # Random insertion
 # Randomly insert n words into the sentence
 ########################################################################
-
 def random_insertion(words, n):
     new_words = words.copy()
     for _ in range(n):
@@ -187,7 +163,6 @@ def add_word(new_words):
 ########################################################################
 # main data augmentation function
 ########################################################################
-
 def eda(sentence, alpha_sr=0.1, alpha_ri=0.1, alpha_rs=0.1, p_rd=0.1, num_aug=9):
     sentence = get_only_chars(sentence)
     words = sentence.split(' ')
@@ -234,114 +209,3 @@ def eda(sentence, alpha_sr=0.1, alpha_ri=0.1, alpha_rs=0.1, p_rd=0.1, num_aug=9)
     # augmented_sentences.append(sentence)
 
     return augmented_sentences
-
-def mkdir(directory):
-    os.makedirs(directory, exist_ok=True)
-    os.makedirs(os.path.join(directory, 'pos'), exist_ok=True)
-    os.makedirs(os.path.join(directory, 'neg'), exist_ok=True)
-
-def augmentation(root='../data/aclImdb/', num_labeled=250, split_ratio=0.7):
-    aug_labeled_dir = os.path.join(root, 'aug_train_labeled')
-    aug_unlabeled_dir = os.path.join(root, 'aug_train_unlabeled')
-    valid_dir = os.path.join(root, 'valid')
-    orig_dir = os.path.join(root, 'train')
-    # 清除原有文件
-    if os.path.exists(aug_labeled_dir):
-        shutil.rmtree(aug_labeled_dir)
-    if os.path.exists(aug_unlabeled_dir):
-        shutil.rmtree(aug_unlabeled_dir)
-    if os.path.exists(valid_dir):
-        shutil.rmtree(valid_dir)
-
-    mkdir(aug_labeled_dir)
-    mkdir(aug_unlabeled_dir)
-    mkdir(valid_dir)
-    for label in ['pos', 'neg']:
-        count = 0
-        path = os.path.join(orig_dir, label)
-        for i, file in tqdm(enumerate(os.listdir(path))):
-            if i >= int(split_ratio * len(os.listdir(path))):
-                shutil.copyfile(os.path.join(path, file), os.path.join(valid_dir, label, file))
-                continue
-            ranking = file.split('.')[0].split('_')[-1]
-            if i == num_labeled // 2: count = 0
-            num_aug = 1 if i < num_labeled // 2 else 2
-            aug_dir = aug_labeled_dir if i < num_labeled // 2 else aug_unlabeled_dir
-            with open(os.path.join(path, file), 'r', encoding='utf8') as orig:
-                text = orig.read()
-                aug_texts = eda(text, num_aug=num_aug)
-                for t in aug_texts:
-                    with open(os.path.join(aug_dir, label, str(count) + '_' + ranking + '.txt'),
-                              'w', encoding='utf8') as aug:
-                        aug.write(t)
-                    count += 1
-
-def truncated_padded(token_ids, pad_id, max_length):
-    if len(token_ids) < max_length:
-        token_ids.extend([pad_id] * (max_length - len(token_ids)))
-    else:
-        token_ids = token_ids[:max_length]
-    return token_ids
-
-class MyIMDB(Dataset):
-
-    def __init__(self, imdb, text_vocab, label_vocab, max_length=512, unlabeled=False):
-        super(MyIMDB, self).__init__()
-        self.imdb = imdb
-        self.text_vocab = text_vocab
-        self.label_vovab = label_vocab
-        self.unlabeled = unlabeled
-        self.max_length = max_length
-
-    def __getitem__(self, idx):
-        if self.unlabeled:
-            example_a = self.imdb[2*idx]
-            example_b = self.imdb[2*idx+1]
-            input_a = [self.text_vocab.stoi[token] for token in example_a.text]
-            input_b = [self.text_vocab.stoi[token] for token in example_b.text]
-            input_a = truncated_padded(input_a, self.text_vocab.stoi['<pad>'], self.max_length)
-            input_b = truncated_padded(input_b, self.text_vocab.stoi['<pad>'], self.max_length)
-            return torch.tensor(input_a, dtype=torch.long), torch.tensor(input_b, dtype=torch.long)
-        else:
-            example = self.imdb[idx]
-            input = [self.text_vocab.stoi[token] for token in example.text]
-            input = truncated_padded(input, self.text_vocab.stoi['<pad>'], self.max_length)
-            target = self.label_vovab.stoi[example.label]
-            return torch.tensor(input, dtype=torch.long), torch.tensor(target, dtype=torch.float)
-
-    def __len__(self):
-        return len(self.imdb) if not self.unlabeled else len(self.imdb) // 2
-
-class IMDB(data.Dataset):
-    def __init__(self, path, text_field, label_field, **kwargs):
-        fields = [('text', text_field), ('label', label_field)]
-        examples = []
-
-        for label in ['pos', 'neg']:
-            cur_path = os.path.join(path, label)
-            files = [file for file in os.listdir(cur_path) if len(file.split('_')) <= 2]
-            files = sorted(files, key=lambda x: int(x.split('_')[0]))
-            for fname in files:
-                with io.open(os.path.join(cur_path, fname), 'r', encoding="utf-8") as f:
-                    text = f.readline()
-                examples.append(data.Example.fromlist([text, label], fields))
-
-        super(IMDB, self).__init__(examples, fields, **kwargs)
-
-def get_imdb(root='../data/aclImdb/'):
-    text_field = data.Field()
-    label_field = data.LabelField(dtype=torch.float)
-    train_labeled_dataset = IMDB(root + 'aug_train_labeled', text_field, label_field)
-    train_unlabeled_dataset = IMDB(root + 'aug_train_unlabeled', text_field, label_field)
-    valid_dataset = IMDB(root+'valid', text_field, label_field)
-    test_dataset = IMDB(root + 'test', text_field, label_field)
-    print(f'Total {len(train_labeled_dataset)} labeled examples')
-    print(f'Total {len(train_unlabeled_dataset)} unlabeled examples')
-    print(f'Total {len(valid_dataset)} valid examples')
-    print(f'Total {len(test_dataset)} test examples')
-    return train_labeled_dataset, train_unlabeled_dataset, \
-           valid_dataset, test_dataset, text_field, label_field
-
-
-if __name__ == '__main__':
-    augmentation(num_labeled=1000)

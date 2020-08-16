@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from torch import nn as nn
-
+from torch.utils.data import Dataset
 
 def mkdir_p(path):
     '''make dir if not exist'''
@@ -19,7 +19,7 @@ def mkdir_p(path):
             raise
 
 
-class AverageMeter(object):
+class AverageMeter:
     """Computes and stores the average and current value
        Imported from https://github.com/pytorch/examples/blob/master/imagenet/main.py#L247-L262
     """
@@ -161,7 +161,7 @@ class Logger:
             self.file.close()
 
 
-class LoggerMonitor(object):
+class LoggerMonitor:
     '''Load and visualize multiple logs.'''
     def __init__ (self, paths):
         '''paths is a distionary with {name:filepath} pair'''
@@ -234,3 +234,41 @@ def linear_rampup(current, rampup_length):
     else:
         current = np.clip(current / rampup_length, 0.0, 1.0)
         return float(current)
+
+
+def truncated_padded(token_ids, pad_id, max_length):
+    if len(token_ids) < max_length:
+        token_ids.extend([pad_id] * (max_length - len(token_ids)))
+    else:
+        token_ids = token_ids[:max_length]
+    return token_ids
+
+
+class MyIMDB(Dataset):
+
+    def __init__(self, imdb, text_vocab, label_vocab, max_length=512, unlabeled=False):
+        super(MyIMDB, self).__init__()
+        self.imdb = imdb
+        self.text_vocab = text_vocab
+        self.label_vovab = label_vocab
+        self.unlabeled = unlabeled
+        self.max_length = max_length
+
+    def __getitem__(self, idx):
+        if self.unlabeled:
+            example_a = self.imdb[2*idx]
+            example_b = self.imdb[2*idx+1]
+            input_a = [self.text_vocab.stoi[token] for token in example_a.text]
+            input_b = [self.text_vocab.stoi[token] for token in example_b.text]
+            input_a = truncated_padded(input_a, self.text_vocab.stoi['<pad>'], self.max_length)
+            input_b = truncated_padded(input_b, self.text_vocab.stoi['<pad>'], self.max_length)
+            return torch.tensor(input_a, dtype=torch.long), torch.tensor(input_b, dtype=torch.long)
+        else:
+            example = self.imdb[idx]
+            input = [self.text_vocab.stoi[token] for token in example.text]
+            input = truncated_padded(input, self.text_vocab.stoi['<pad>'], self.max_length)
+            target = self.label_vovab.stoi[example.label]
+            return torch.tensor(input, dtype=torch.long), torch.tensor(target, dtype=torch.float)
+
+    def __len__(self):
+        return len(self.imdb) if not self.unlabeled else len(self.imdb) // 2
