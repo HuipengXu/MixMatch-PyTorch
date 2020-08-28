@@ -138,6 +138,7 @@ def main(args):
     train_criterion = SemiLoss()
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=2)
 
     ema_optimizer = WeightEMA(model, ema_model, args.lr, alpha=args.ema_decay)
     start_epoch = 0
@@ -173,6 +174,8 @@ def main(args):
         _, train_acc = validate(train_labeled_loader, ema_model, criterion, use_cuda, mode='Train Stats')
         val_loss, val_acc = validate(valid_loader, ema_model, criterion, use_cuda, mode='Valid Stats')
         test_loss, test_acc = validate(test_loader, ema_model, criterion, use_cuda, mode='Test Stats ')
+
+        lr_scheduler.step(test_acc)
 
         step = args.val_iteration * (epoch + 1)
 
